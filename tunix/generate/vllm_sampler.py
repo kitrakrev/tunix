@@ -201,6 +201,7 @@ class VllmSampler(base_sampler.BaseSampler):  # pylint: disable=invalid-name
       if preprocess_fn:
         updated_weights = preprocess_fn(updated_weights)
 
+      import copy
       utils.transfer_state_with_mappings(
           src_state=updated_weights,
           dst_state=self.transformer_state,
@@ -246,6 +247,12 @@ class VllmSampler(base_sampler.BaseSampler):  # pylint: disable=invalid-name
           reshard_chunk_size=self.config.reshard_chunk_size,
       )
 
+    if hasattr(self._model_runner, "state_leaves"):
+      from flax import nnx
+      if isinstance(self._model_runner.state, nnx.State):
+        self._model_runner.state_leaves = tuple(jax.tree_util.tree_leaves(self._model_runner.state))
+      else:
+        self._model_runner.state_leaves = self._model_runner.state
     if self.llm is not None:
       self.llm.collective_rpc("reinitialize_kv_cache")
     elif self._driver is not None:
