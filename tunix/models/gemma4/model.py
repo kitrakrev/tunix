@@ -864,7 +864,10 @@ class Attention(nnx.Module):
           'end_index': cache['end_index'] + seq_len,
       }
     else:
-      new_cache = None
+      new_cache = {
+          'v': cache_value_proj,
+          'k': cache_key_proj,
+      }
 
     return new_cache, attn_output
 
@@ -1241,7 +1244,8 @@ class Gemma4(BackendMappingMixin, nnx.Module):
       B, T = tokens.shape  # pylint: disable=invalid-name
       positions = jnp.tile(jnp.arange(T)[None, :], (B, 1))
 
-    new_cache = None if cache is None else {}
+    return_cache = cache is not None
+    new_cache = {}
     x = self.embedder.encode(tokens)
 
     per_layer_inputs = None
@@ -1256,9 +1260,7 @@ class Gemma4(BackendMappingMixin, nnx.Module):
       shared_idx = self.kv_cache_sharing_patterns[i]
       if shared_idx != i:
         shared_layer_name = f'layer_{shared_idx}'
-        kv_shared_cache = (
-            new_cache.get(shared_layer_name) if new_cache is not None else None
-        )
+        kv_shared_cache = new_cache.get(shared_layer_name)
       else:
         kv_shared_cache = None
 
@@ -1274,8 +1276,7 @@ class Gemma4(BackendMappingMixin, nnx.Module):
           segment_ids=segment_ids,
       )
 
-      if new_cache is not None:
-        new_cache[layer_name] = layer_cache  # pytype: disable=container-type-mismatch
+      new_cache[layer_name] = layer_cache  # pytype: disable=container-type-mismatch
 
     x = self.final_norm(x)
     logits = self.embedder.decode(x).astype(jnp.float32)
@@ -1284,7 +1285,7 @@ class Gemma4(BackendMappingMixin, nnx.Module):
       logits /= self.config.final_logit_softcap
       logits = jnp.tanh(logits) * self.config.final_logit_softcap
 
-    return logits, new_cache  # pytype: disable=container-type-mismatch
+    return logits, (new_cache if return_cache else None)  # pytype: disable=container-type-mismatch
 
   def init_cache(self, batch_size, max_seq_len, dtype):
     cache = {}
