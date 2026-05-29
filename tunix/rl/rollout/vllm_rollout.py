@@ -131,6 +131,14 @@ class VllmRollout(base_rollout.BaseRollout):
   ) -> None:
     self._sampler.update_params(params, filter_types)
 
+  def regain_resource(self) -> None:
+    """Regains vLLM runtime resources before a colocated rollout window."""
+    self._sampler.regain_resource()
+
+  def release_resources(self) -> None:
+    """Releases vLLM runtime resources after a colocated rollout window."""
+    self._sampler.release_resources()
+
   def pad_id(self) -> int:
     return self._sampler.tokenizer.pad_id()
 

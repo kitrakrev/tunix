@@ -406,6 +406,7 @@ class GrpoPipeline(config.HyperParameters):
     return rl_cluster_lib.ClusterConfig(
         role_to_mesh=role_to_mesh,
         rollout_engine=self._config_string("rollout_engine"),
+        colocate_mode=self._config_bool("colocate_mode"),
         offload_to_cpu=self._config_bool("offload_to_cpu"),
         training_config=self.create_rl_training_config(),
         rollout_config=rollout_config,

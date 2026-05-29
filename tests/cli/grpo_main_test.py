@@ -208,6 +208,22 @@ train_fraction: 1.0
 
 class DispatchTest(absltest.TestCase):
 
+  def test_create_cluster_config_propagates_colocate_mode(self):
+    pipeline = _make_pipeline("\ncolocate_mode: true\n")
+
+    with mock.patch.object(
+        pipeline,
+        'create_rl_training_config',
+        return_value=mock.sentinel.training_config,
+    ):
+      cluster_config = pipeline.create_cluster_config(
+          role_to_mesh={}, rollout_config=mock.sentinel.rollout_config
+      )
+
+    self.assertTrue(cluster_config.colocate_mode)
+    self.assertIs(cluster_config.rollout_config, mock.sentinel.rollout_config)
+    self.assertIs(cluster_config.training_config, mock.sentinel.training_config)
+
   def test_agentic_data_module_receives_data_config_for_raw_dataset(self):
     extra = """
 training_mode: "agentic_grpo"

@@ -260,6 +260,33 @@ class VllmSampler(base_sampler.BaseSampler):  # pylint: disable=invalid-name
     elif self._driver is not None:
       self._driver.llm_engine.collective_rpc("reinitialize_kv_cache")
 
+  def regain_resource(self):
+    """Reclaims vLLM runtime resources for the next rollout window.
+
+    In colocated execution the training side may release vLLM resources between
+    global batches to keep peak HBM usage bounded. Regaining resources restores
+    the runtime to a serving-ready state. Weight restoration is intentionally
+    lazy and only occurs if a later change actually implements model offload for
+    the sampler.
+    """
+    if self.llm is not None:
+      self.llm.collective_rpc("reinitialize_kv_cache")
+    elif self._driver is not None:
+      self._driver.llm_engine.collective_rpc("reinitialize_kv_cache")
+
+  def release_resources(self):
+    """Releases rollout-only resources after a colocated rollout window.
+
+    Today this drops the KV cache, which is the main rollout-specific HBM
+    allocation that can be reclaimed safely without disturbing the weight sync
+    contract. The method is intentionally broad so model offload can be added
+    later without forcing another public API change.
+    """
+    if self.llm is not None:
+      self.llm.collective_rpc("delete_kv_cache")
+    elif self._driver is not None:
+      self._driver.llm_engine.collective_rpc("delete_kv_cache")
+
   def load_checkpoint(self, path_or_weights: str | jaxtyping.PyTree):
     # TODO(b/434741253): Consider support orbax checkpoint loading
     if isinstance(path_or_weights, jaxtyping.PyTree):

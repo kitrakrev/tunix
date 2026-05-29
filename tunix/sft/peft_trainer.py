@@ -18,6 +18,7 @@ from collections.abc import Iterable
 import contextlib
 import dataclasses
 import functools
+import operator
 import time
 from typing import Any, Callable, Concatenate, Dict, List, ParamSpec, Tuple
 
@@ -286,6 +287,99 @@ class PeftTrainer:
 
   def with_data_hooks(self, data_hooks: hooks.DataHooks):
     self.data_hooks = data_hooks
+
+  def _is_tree_on_device(self, tree: Any) -> bool:
+    """Returns whether any array leaf in ``tree`` currently resides on device.
+
+    The trainer uses this helper to avoid redundant device transfers when a
+    colocated rollout window repeatedly offloads and restores training runtime.
+    The check mirrors RLCluster's state inspection logic but stays local to the
+    trainer so rollout orchestration does not need to depend on optimizer
+    internals.
+    """
+
+    shardings = jax.tree.map(
+        lambda x: x.sharding if hasattr(x, "sharding") else None, tree
+    )
+    return jax.tree_util.tree_reduce(
+        operator.or_,
+        jax.tree.map(
+            lambda x: x is not None and x.memory_kind == "device",
+            shardings,
+        ),
+        initializer=False,
+    )
+
+  def set_runtime_memory_kind(
+      self,
+      memory_kind: str,
+      *,
+      include_model: bool = True,
+  ) -> None:
+    """Moves trainer runtime state to the requested memory kind.
+
+    This method exists for colocated rollout windows where the optimizer state
+    is often the dominant training-only memory consumer. Callers can choose to
+    keep model weights resident while offloading only optimizer state, which is
+    the desired policy for vanilla shared-backbone colocate mode.
+
+    Args:
+      memory_kind: Target memory kind. Supported values match JAX sharding
+        memory kinds handled by ``jax.device_put``.
+      include_model: Whether to move model variables together with optimizer
+        state. Set to ``False`` when the rollout side shares the same live model
+        object and only trainer-owned runtime should move.
+    """
+    if include_model:
+      model_variables = nnx.variables(self.model)
+      model_on_device = self._is_tree_on_device(model_variables)
+      if (model_on_device and memory_kind != "device") or (
+          not model_on_device and memory_kind == "device"
+      ):
+        nnx.update(
+            self.model,
+            jax.device_put(
+                model_variables,
+                jax.tree.map(
+                    lambda x: x.with_memory_kind(memory_kind),
+                    jax.tree.map(lambda x: x.sharding, model_variables),
+                ),
+            ),
+        )
+
+    optimizer_state = nnx.state(self.optimizer, nnx.optimizer.OptState)
+    optimizer_on_device = self._is_tree_on_device(optimizer_state)
+    if (optimizer_on_device and memory_kind != "device") or (
+        not optimizer_on_device and memory_kind == "device"
+    ):
+      nnx.update(
+          self.optimizer,
+          jax.device_put(
+              optimizer_state,
+              jax.tree.map(
+                  lambda x: x.with_memory_kind(memory_kind),
+                  jax.tree.map(lambda x: x.sharding, optimizer_state),
+              ),
+          ),
+      )
+
+  def offload_runtime_to_cpu(self, *, include_model: bool = True) -> None:
+    """Offloads trainer runtime to pinned host memory.
+
+    Args:
+      include_model: Whether model variables should be offloaded together with
+        optimizer state.
+    """
+    self.set_runtime_memory_kind("pinned_host", include_model=include_model)
+
+  def load_runtime_from_cpu(self, *, include_model: bool = True) -> None:
+    """Restores trainer runtime from pinned host memory back to device memory.
+
+    Args:
+      include_model: Whether model variables should be restored together with
+        optimizer state.
+    """
+    self.set_runtime_memory_kind("device", include_model=include_model)
 
   def clear_jit_cache(self):
     """Clears the JIT cache of the train and eval step functions.
