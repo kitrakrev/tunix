@@ -585,7 +585,8 @@ class RLCluster:
     del self.train_actor
     self._maybe_offload_model_to_cpu(self.actor_trainer.model, Role.ACTOR)
     self._anchor_policy_state = rl_utils.put_params_on_memory_kind(
-        nnx.state(self.actor_trainer.model), "pinned_host"
+        nnx.state(self.actor_trainer.model),
+        self._default_memory_kind if not self.cluster_config.offload_to_cpu else "pinned_host"
     )
 
   def _propagate_backbone_sharing_map(self):
@@ -1139,9 +1140,12 @@ class RLCluster:
           ),
           actor_pspecs,
       )
-      state = reshard.reshard_pytree(
-          self._anchor_policy_state, actor_model_sharding
-      )
+      if self._is_state_on_device(self._anchor_policy_state):
+        anchor_policy_state = self._anchor_policy_state
+      else:
+        anchor_policy_state = rl_utils.put_params_on_memory_kind(
+            self._anchor_policy_state, self._default_memory_kind
+        )
       outs = []
       for batch_slice in rl_utils.chunk_slices_by_size(
           stop=batch_size, step=micro_batch_size
@@ -1149,7 +1153,7 @@ class RLCluster:
         outs.append(
             common.compute_per_token_logps(
                 graphdef,
-                state,
+                anchor_policy_state,
                 prompt_tokens=dest_prompt_tokens[batch_slice],
                 completion_tokens=dest_completion_tokens[batch_slice],
                 pad_id=pad_id,
@@ -1189,7 +1193,8 @@ class RLCluster:
       self.rollout.update_params(src_filtered_params, filter_types)
       # The anchor policy state is snapshotted from actor_trainer.model.
       self._anchor_policy_state = rl_utils.put_params_on_memory_kind(
-          nnx.state(self.actor_trainer.model), "pinned_host"
+          nnx.state(self.actor_trainer.model),
+          self._default_memory_kind if not self.cluster_config.offload_to_cpu else "pinned_host"
       )
 
     # sync weights marks the end of a full batch, so increment the global steps.
